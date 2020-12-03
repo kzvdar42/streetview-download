@@ -24,7 +24,7 @@ def create_grid(x1, y1, x2, y2, step=0.0005):
     return np.array(grid)
 
 
-def download_and_save(panoid, save_path, zoom=5, min_zoom=3):
+def download_and_save(panoid, save_path, zoom=5, min_zoom=3, queue=None):
     if os.path.isfile(save_path):
         return
     # if returned empty image, try lowering the resolution
@@ -36,7 +36,10 @@ def download_and_save(panoid, save_path, zoom=5, min_zoom=3):
     else:
         return
     panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+    os.makedirs(os.path.split(save_path)[0], exist_ok=True)
     cv2.imwrite(save_path, panorama)
+    if queue is None:
+        queue.append(save_path)
 
 
 def get_panos_for_grid(grid, executor, closest=True, downloaded_panoids=None):
@@ -66,14 +69,15 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('pos_file', type=str, help='Positions file path')
     parser.add_argument('output_path', type=str, help='Output folder path')
-    parser.add_argument('--step', type=float, default=0.0002, help='Grid step size [Default: 0.0002]')
+    parser.add_argument('--step', type=float, default=0.0001, help='Grid step size [Default: 0.0002]')
     parser.add_argument('--zoom', type=int, default=5, help='Panorama quality in range [0, 5] [Default: 5]')
     parser.add_argument('--min_zoom', type=int, default=3,
         help='Minimun panorama quality to download, if better quality is not available in range [0, 5] [Default: 5]'
     )
     parser.add_argument('--max_workers', type=int, default=20, help='Max number of parallel workers to download panoramas [Defaul: 20]')
     parser.add_argument('--save_ext', type=str, default='jpg', help='Format to save panoramas [Default: jpg]')
-    parser.add_argument('--grid_radius', type=float, default=0.0004, help='Grid radius for single points [Default: 0.0004]')
+    parser.add_argument('--min_year', type=int, default=2010, help='Minimum year to download [Default: 2010]')
+    parser.add_argument('--grid_radius', type=float, default=0.0005, help='Grid radius for single points [Default: 0.0004]')
     parser.add_argument('--download_all', action='store_true', help='Download all founded panoramas, not only the closest ones')
     return parser.parse_args()
 
@@ -89,7 +93,6 @@ if __name__ == "__main__":
     with open(args.pos_file) as in_file:
         pos_boxes = []
         for n_line, line in enumerate(in_file):
-            print(line)
             line = line.strip()
             # Skip commented lines
             if line.startswith('#'):
@@ -120,11 +123,12 @@ if __name__ == "__main__":
             print(f'Found {len(indexed_panoids_set)} new panos')
             kwargs = []
             for (lat, lon), panoids in indexed_pans_dict.items():
-                os.makedirs(f'{args.output_path}/{lat}_{lon}', exist_ok=True)
                 for pano in panoids:
                     year, month, panoid = pano['year'], pano['month'], pano['panoid']
-                    save_path = f'{args.output_path}/{lat}_{lon}/{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                    kwargs.append(dict(panoid=panoid, save_path=save_path, zoom=args.zoom, min_zoom=args.min_zoom))
+                    if int(year) >= args.min_year:
+                        save_path = f'{args.output_path}/{lat}_{lon}/{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+                        # save_path = f'{args.output_path}/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+                        kwargs.append(dict(panoid=panoid, save_path=save_path, zoom=args.zoom, min_zoom=args.min_zoom))
             pbar = tqdm(total=len(kwargs))
             for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
                 pbar.update(1)

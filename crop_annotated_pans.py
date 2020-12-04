@@ -24,7 +24,7 @@ def get_args():
     parser.add_argument('--mean_fov', type=float, default=50.0, help='Mean Field of View for image height [default: 50.0]')
     parser.add_argument('--max_fov_offset', type=float, default=40.0, help='Max Field of View offset [default: 40.0]')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
-    parser.add_argument('--skip_annotated', action='store_true', help='Debug mode')
+    parser.add_argument('--skip_annotated', action='store_true', help='Skip annotated')
     return parser.parse_args()
 
 

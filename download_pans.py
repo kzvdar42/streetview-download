@@ -1,6 +1,9 @@
 import os
+import time
 import argparse
 from concurrent.futures import ThreadPoolExecutor as PoolExecutor
+from threading import Thread
+import multiprocessing as mp
 
 import cv2
 import numpy as np
@@ -37,32 +40,107 @@ def download_and_save(panoid, save_path, zoom=5, min_zoom=3, queue=None):
         return
     panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
     os.makedirs(os.path.split(save_path)[0], exist_ok=True)
-    cv2.imwrite(save_path, panorama)
-    if queue is None:
-        queue.append(save_path)
+    if not os.path.isfile(save_path):
+        cv2.imwrite(save_path, panorama)
+        if queue is not None:
+            queue.put(save_path)
+    return
 
 
-def get_panos_for_grid(grid, executor, closest=True, downloaded_panoids=None):
+def download_and_save_queue(executor, in_queue, out_queue, args):
+    pbar = tqdm(desc="Downloading panoramas", total=in_queue.total_amount)
+    while True:
+        kwargs = []
+        panos = None
+        if in_queue.total_amount != pbar.total:
+            pbar.total = in_queue.total_amount
+            pbar.refresh()
+        while not in_queue.empty():
+            panos = in_queue.get()
+            if isinstance(panos, str) and panos == "exit":
+                break
+            for pano in panos:
+                year, month, panoid = pano['year'], pano['month'], pano['panoid']
+                lat, lon = pano['lat'], pano['lon']
+                if int(year) >= args.min_year:
+                    # save_path = f'{args.output_path}/{lat}_{lon}/{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+                    save_path = f'{args.output_path}/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+                    kwargs.append(dict(
+                        panoid=panoid, save_path=save_path, zoom=args.zoom,
+                        min_zoom=args.min_zoom, queue=out_queue
+                    ))
+        if isinstance(panos, str) and panos == "exit":
+                break
+        # If queue is empty, wait a little
+        if not kwargs and in_queue.empty():
+            time.sleep(2)
+            continue
+        else:
+            for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
+                pbar.update(1)
+    if kwargs:
+        for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
+            pbar.update(1)
+    pbar.close()
+    return
+
+
+def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
     downloaded_panoids = downloaded_panoids or set()
     indexed_panoids_set = downloaded_panoids.copy()
-    indexed_pans_dict = dict()
-    found_panoids = 0
-    args = [dict(lat=lat, lon=lon, closest=closest) for lat, lon in grid]
-    pbar = tqdm(desc='Indexing panoids', total=len(args))
-    for (lat, lon), pans in executor.map(lambda kwargs: get_panoids(**kwargs), args):
-        pbar.update(1)
-        pans = [p for p in pans if p['panoid'] not in indexed_panoids_set]
-        panoids = [pano['panoid'] for pano in pans]
-        if len(pans) > 0:
-            n_pans = len(indexed_panoids_set)
-            indexed_panoids_set.update(panoids)
-            found_panoids += len(indexed_panoids_set) - n_pans
-            indexed_pans_dict[(lat, lon)] = pans
-            pbar.set_postfix(
-                found_pans=found_panoids
-            )
-    pbar.close()
-    return indexed_pans_dict, indexed_panoids_set.difference(downloaded_panoids)
+    n_all_pans, n_filtered_pans = 0, 0
+    kwargs = []
+    try:
+        for pos_box in pos_boxes:
+            grid = create_grid(*pos_box, step=args.step)
+            kwargs.extend([dict(lat=lat, lon=lon, closest=args.closest) for lat, lon in grid])
+
+        pbar = tqdm(desc='Indexing panoids', total=len(kwargs))
+        for (lat, lon), pans in executor.map(lambda kwargs: get_panoids(**kwargs), kwargs):
+            pans = [p for p in pans if p['panoid'] not in indexed_panoids_set]
+            filtered_pans = [p for p in pans if p['year'] >= args.min_year]
+            panoids = set(p['panoid'] for p in pans)
+            filtered_panoids = set(p['panoid'] for p in filtered_pans)
+            if len(pans) > 0:
+                n_all_pans += len(panoids.difference(indexed_panoids_set))
+                n_filtered_pans += len(filtered_panoids.difference(indexed_panoids_set))
+                indexed_panoids_set.update(panoids)
+                if queue is not None:
+                    queue.put(pans)
+                    queue.total_amount = n_filtered_pans
+                pbar.set_postfix(
+                    all_pans=n_all_pans,
+                    filtered_pans=n_filtered_pans,
+                )
+            pbar.update(1)
+    finally:
+        pbar.close()
+        queue.put("exit")
+    return indexed_panoids_set.difference(downloaded_panoids)
+
+
+def read_pos_boxes_file(path, grid_radius):
+    pos_boxes = []
+    with open(path) as in_file:
+        for n_line, line in enumerate(in_file):
+            line = line.strip()
+            # Skip commented lines
+            if line.startswith('#'):
+                continue
+            # split by comma
+            pos_box = [float(coord.strip()) for coord in line.split(',')]
+            # If just one point, make a grid
+            if len(pos_box) == 2:
+                pos_box = [
+                    pos_box[0] - grid_radius,
+                    pos_box[1] - grid_radius,
+                    pos_box[0] + grid_radius,
+                    pos_box[1] + grid_radius,
+                ]
+            if len(pos_box) != 4:
+                raise ValueError(f'Bad line ({n_line}) in input!')
+            pos_boxes.append(pos_box)
+    return pos_boxes
 
 
 def get_args():
@@ -79,7 +157,10 @@ def get_args():
     parser.add_argument('--min_year', type=int, default=2010, help='Minimum year to download [Default: 2010]')
     parser.add_argument('--grid_radius', type=float, default=0.0005, help='Grid radius for single points [Default: 0.0004]')
     parser.add_argument('--download_all', action='store_true', help='Download all founded panoramas, not only the closest ones')
-    return parser.parse_args()
+    
+    args = parser.parse_args()
+    args.closest = not args.download_all
+    return args
 
 
 if __name__ == "__main__":
@@ -90,46 +171,28 @@ if __name__ == "__main__":
     args = get_args()
     print(args)
     # Read position boxes
-    with open(args.pos_file) as in_file:
-        pos_boxes = []
-        for n_line, line in enumerate(in_file):
-            line = line.strip()
-            # Skip commented lines
-            if line.startswith('#'):
-                continue
-            pos_box = [float(coord.strip()) for coord in line.split(',')]
-            if len(pos_box) == 2:
-                pos_box = [
-                    pos_box[0] - args.grid_radius,
-                    pos_box[1] - args.grid_radius,
-                    pos_box[0] + args.grid_radius,
-                    pos_box[1] + args.grid_radius,
-                ]
-            if len(pos_box) != 4:
-                raise ValueError(f'Bad line ({n_line}) in input!')
-            pos_boxes.append(pos_box)
+    pos_boxes = read_pos_boxes_file(args.pos_file, args.grid_radius)
     
-    closest = not args.download_all
-    downloaded_panoids = set()
-    with PoolExecutor(max_workers=args.max_workers) as executor:
-        for (lat1, lon1, lat2, lon2) in pos_boxes:
-            print(f'Creating grid for {lat1, lon1, lat2, lon2}')
-            grid = create_grid(lat1, lon1, lat2, lon2, step=args.step)
-            print(f'Grid size {len(grid)}')
-            indexed_pans_dict, indexed_panoids_set = get_panos_for_grid(
-                grid, executor, closest, downloaded_panoids
-            )
-            downloaded_panoids.update(indexed_panoids_set)
-            print(f'Found {len(indexed_panoids_set)} new panos')
-            kwargs = []
-            for (lat, lon), panoids in indexed_pans_dict.items():
-                for pano in panoids:
-                    year, month, panoid = pano['year'], pano['month'], pano['panoid']
-                    if int(year) >= args.min_year:
-                        save_path = f'{args.output_path}/{lat}_{lon}/{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                        # save_path = f'{args.output_path}/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                        kwargs.append(dict(panoid=panoid, save_path=save_path, zoom=args.zoom, min_zoom=args.min_zoom))
-            pbar = tqdm(total=len(kwargs))
-            for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
-                pbar.update(1)
-            pbar.close()
+    executor = PoolExecutor(max_workers=args.max_workers)
+    m = mp.Manager()
+    panos_queue = m.Queue()
+    panos_queue.total_amount = 0
+
+    # Launch indexation
+    get_panos_thread = Thread(
+        target = get_panos,
+        args = (pos_boxes, executor, panos_queue, args)
+    )
+    get_panos_thread.start()
+
+    panos_path_queue = m.Queue()
+    # Launch downloading
+    download_and_save_thread = Thread(
+        target = download_and_save_queue,
+        args = (executor, panos_queue,
+                panos_path_queue, args)
+    )
+    download_and_save_thread.start()
+
+    get_panos_thread.join()
+    download_and_save_thread.join()

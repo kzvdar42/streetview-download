@@ -40,7 +40,7 @@ def _panoids_data(lat, lon, proxies=None):
     try:
         return requests.get(url, proxies=proxies)
     except requests.exceptions.ConnectionError:
-        time.sleep(30)
+        time.sleep(2)
         return _panoids_data(lat, lon, proxies=proxies)
 
 def postprocess_panoids(resp, closest=False, disp=False, proxies=None):

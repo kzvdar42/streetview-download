@@ -19,7 +19,6 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('input_crops_path', type=str, help='Input crops path')
     parser.add_argument('input_pans_path', type=str, help='Input pans path')
-    parser.add_argument('output_path', type=str, help='Output folder path')
     parser.add_argument('--n_cuts_per_image', type=int, default=5, help='Number of cuts [default: 5]')
     parser.add_argument('--phi', type=float, default=15, help='Phi angle (pitch) in range [-90, 90) degrees [default: 15]')
     parser.add_argument('--resolution_x', type=int, default=1080, help='Resolution of the output image width [default: 256]')
@@ -78,9 +77,6 @@ if __name__ == '__main__':
 
             bboxes = [np.array(obj['bbox'], dtype=np.int32) for obj in im_anns]
 
-            out_image_folder_path = os.path.join(out_folder_path, im_folder)
-            os.makedirs(out_image_folder_path, exist_ok=True)
-
             # Get mapping
             img_n_cut = int(im_name.split('_')[-1])
             pan_img = cv2.imread(pan_name2path[pan_name])
@@ -93,15 +89,15 @@ if __name__ == '__main__':
                 cv2.imshow('cropped_img', cv2.resize(cropped_img, (1080, 720)))
                 # cv2.imshow('cropped_img', cv2.resize(cropped_img, (1920, 1080)))
             
-            # print(map_x)
-            # print(map_y)
             for bbox in bboxes:
+                # convert to xyxy
                 b = np.array([
                     bbox[0],
                     bbox[1],
                     bbox[0] + bbox[2],
                     bbox[1] + bbox[3],
                 ])
+                # Map to panorama coordinates
                 for i in range(2):
                     print(i, i*2+1, i*2)
                     print(i, b[i*2+1], b[i*2])
@@ -119,6 +115,6 @@ if __name__ == '__main__':
                 if key == ord('q'):
                     break
         os.makedirs(os.path.split(annots_out_path)[0], exist_ok=True)
-        # writer.write_result(annots_out_path)
+        writer.write_result(annots_out_path)
 
     cv2.destroyAllWindows()

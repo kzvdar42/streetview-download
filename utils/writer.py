@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 
@@ -12,7 +13,7 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-class COCO_writer:
+class CocoWriter:
 
     def __init__(self, categories=None, synonyms=None):
         categories = [] if categories is None else categories
@@ -36,7 +37,7 @@ class COCO_writer:
         else:
             return cat_id
 
-    def add_category(name, supercategory, cat_id=None):
+    def add_category(self, name, supercategory, cat_id=None):
         existing_ids = [x['id'] for x in self.categories]
         if cat_id is not None and any([x == cat_id for x in existing_ids]):
             raise ValueError(f"Category with id {cat_id} already exists")
@@ -77,7 +78,7 @@ class COCO_writer:
     def add_annotation(self, image_id, bbox, track_id, category_id, segmentation=None):
         assert image_id is not None
 
-        area = int(bbox[1] * bbox[3])
+        area = int(bbox[2] * bbox[3])
         self.annotations.append({
             'image_id': image_id,
             'segmentation': segmentation,
@@ -124,8 +125,10 @@ class COCO_writer:
     def write_result(self, save_path):
         if len(self.images) == 0 or len(self.annotations) == 0:
             print('Empty annotations, do not write to the file.')
-
+            return
+        
         result = self.get_json()
+        os.makedirs(os.path.split(save_path)[0], exist_ok=True)
         with open(save_path, 'w') as out_file:
             json.dump(
                 result,
@@ -137,9 +140,74 @@ class COCO_writer:
 
 
 def get_coco_writer():
-    return COCO_writer([
+    return CocoWriter([
         {
             'id': 1,
             'name': 'sign',
         }
     ])
+
+class TxtWriter:
+
+    def __init__(self, categories=None, synonyms=None):
+        categories = [] if categories is None else categories
+        self.categories = categories
+        self.annotations = []
+        self.cat_to_id = dict()
+        for cat in self.categories:
+            cat_id = cat['id']
+            self.cat_to_id[cat['name'].lower()] = cat_id
+            # Add synonyms
+            if synonyms is not None:
+                for s in synonyms.get(cat['name'], []):
+                    self.cat_to_id[s.lower()] = cat_id
+
+    def get_cat_id(self, cat_name):
+        cat_id = self.cat_to_id.get(cat_name.lower(), None)
+        if cat_id is None:
+            raise ValueError(f'Unknown category ({cat_name})')
+        else:
+            return cat_id
+
+    def add_category(self, name, supercategory, cat_id=None):
+        existing_ids = [x['id'] for x in self.categories]
+        if cat_id is not None and any([x == cat_id for x in existing_ids]):
+            raise ValueError(f"Category with id {cat_id} already exists")
+
+        if cat_id is None:
+            cat_id = max(existing_ids) + 1 if len(existing_ids) else 1
+
+        self.categories.append({
+            'name': name,
+            'supercategory': supercategory,
+            'id': cat_id,
+        })
+
+    def add_frame(self, height, width, filename=None, file_ext=None, image_id=None):
+        return image_id, filename
+
+    def add_annotation(self, img_path, bbox, track_id, category_id):
+        x1, y1, x2, y2 = bbox
+        #name, pred, x1, y1 ,x2, y2
+        self.annotations.append([
+            img_path,
+            category_id,
+            x1,y1,
+            x2,y2,
+        ])
+
+
+    def get_txt(self):
+        return '\n'.join(
+            [' '.join(ann) for ann in self.annotations] 
+        )
+
+    def write_result(self, save_path):
+        if len(self.annotations) == 0:
+            print('Empty annotations, do not write to the file.')
+            return
+        
+        result = self.get_txt()
+        os.makedirs(os.path.split(save_path)[0], exist_ok=True)
+        with open(save_path, 'w') as out_file:
+            out_file.write(result)

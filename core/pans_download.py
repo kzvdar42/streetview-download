@@ -17,7 +17,9 @@ import shutil
 import itertools
 import os
 
+import PIL
 from PIL import Image
+from tqdm import tqdm
 import numpy as np
 from skimage import io
 from io import BytesIO
@@ -166,7 +168,7 @@ def download_tiles(tiles, directory, disp=False):
                 response = requests.get(url, stream=True)
                 break
             except requests.ConnectionError:
-                print("Connection error. Trying again in 2 seconds.")
+                tqdm.write("Connection error. Trying again in 2 seconds.")
                 time.sleep(2)
 
         with open(directory + '/' + fname, 'wb') as out_file:
@@ -227,9 +229,18 @@ def download_panorama_v3(panoid, zoom=5, disp=False):
                     response = requests.get(url, stream=True)
                     break
                 except requests.ConnectionError:
-                    print("Connection error. Trying again in 2 seconds.")
+                    tqdm.write("Connection error. Trying again in 2 seconds.")
                     time.sleep(2)
-            valid_tiles.append( Image.open(BytesIO(response.content)) )
+            # If Not a valid tile, try once more, after that fill with black pixels
+            try:
+                valid_tiles.append( Image.open(BytesIO(response.content)) )
+            except PIL.UnidentifiedImageError:
+                try:
+                    time.sleep(2)
+                    response = requests.get(url, stream=True)
+                    valid_tiles.append( Image.open(BytesIO(response.content)) )
+                except (requests.ConnectionError, PIL.UnidentifiedImageError):
+                    valid_tiles.append( Image.new('RGB', (tile_width, tile_height)) )
             del response
             
     # function to stich

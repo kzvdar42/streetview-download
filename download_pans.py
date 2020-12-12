@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor as PoolExecutor
 from threading import Thread
@@ -10,6 +11,8 @@ import numpy as np
 from tqdm import tqdm
 
 from core.pans_download import get_panoids, download_panorama_v3
+from utils.writer import get_coco_writer
+from utils.pool_helper import QueueIterator, PoolHelper, return_with_code
 
 
 def create_grid(x1, y1, x2, y2, step=0.0005):
@@ -27,62 +30,49 @@ def create_grid(x1, y1, x2, y2, step=0.0005):
     return np.array(grid)
 
 
-def download_and_save(panoid, save_path, zoom=5, min_zoom=3, queue=None):
-    if os.path.isfile(save_path):
-        return
-    # if returned empty image, try lowering the resolution
-    for z in range(zoom, min_zoom-1, -1):
-        panorama = download_panorama_v3(panoid, zoom=z, disp=False)
-        if np.sum(panorama) > 0:
-            break
-    # If no image is found, do not save
-    else:
-        return
-    panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
-    os.makedirs(os.path.split(save_path)[0], exist_ok=True)
-    if not os.path.isfile(save_path):
-        cv2.imwrite(save_path, panorama)
-        if queue is not None:
-            queue.put(save_path)
-    return
-
-
-def download_and_save_queue(executor, in_queue, out_queue, args):
-    pbar = tqdm(desc="Downloading panoramas", total=in_queue.total_amount)
-    while True:
-        kwargs = []
-        panos = None
-        if in_queue.total_amount != pbar.total:
-            pbar.total = in_queue.total_amount
-            pbar.refresh()
-        while not in_queue.empty():
-            panos = in_queue.get()
-            if isinstance(panos, str) and panos == "exit":
+def download_and_save(panoid, save_path, zoom=5, min_zoom=3,
+                      out_queue=None, skip_downloaded=True):
+    folder_path, image_name = os.path.split(save_path)
+    # If already exists, skip saving, but write to queue
+    if not (os.path.isfile(save_path) and skip_downloaded):
+        # if returned empty image, try lowering the resolution
+        for z in range(zoom, min_zoom-1, -1):
+            panorama = download_panorama_v3(panoid, zoom=z, disp=False)
+            if np.sum(panorama) > 0:
                 break
-            for pano in panos:
-                year, month, panoid = pano['year'], pano['month'], pano['panoid']
-                lat, lon = pano['lat'], pano['lon']
-                if int(year) >= args.min_year:
-                    # save_path = f'{args.output_path}/{lat}_{lon}/{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                    save_path = f'{args.output_path}/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                    kwargs.append(dict(
-                        panoid=panoid, save_path=save_path, zoom=args.zoom,
-                        min_zoom=args.min_zoom, queue=out_queue
-                    ))
-        if isinstance(panos, str) and panos == "exit":
-                break
-        # If queue is empty, wait a little
-        if not kwargs and in_queue.empty():
-            time.sleep(2)
-            continue
         else:
-            for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
-                pbar.update(1)
-    if kwargs:
-        for _ in executor.map(lambda kwargs: download_and_save(**kwargs), kwargs):
-            pbar.update(1)
+            # If no image is found, skip
+            return
+        panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+        os.makedirs(folder_path, exist_ok=True)
+        cv2.imwrite(save_path, panorama)
+    # Write to out_queue
+    if out_queue is not None:
+        out_queue.put(image_name)
+
+
+def download_and_save_queue(executor, in_queue, out_queue, args, skip_downloaded=True):
+    pbar = tqdm(desc="Downloading panoramas", total=in_queue.total_amount)
+    in_queue.pbar = pbar
+    executor = PoolHelper(pool=executor)
+    for panos in in_queue:
+        for pano in panos:
+            year, month, panoid = pano['year'], pano['month'], pano['panoid']
+            lat, lon = pano['lat'], pano['lon']
+            if int(year) >= args.min_year:
+                save_path = f'{args.output_path}/pans/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+                executor.submit(
+                    return_with_code(download_and_save),
+                    f_done=lambda f: pbar.update(1),
+                    panoid=panoid, save_path=save_path, zoom=args.zoom,
+                    min_zoom=args.min_zoom, out_queue=out_queue,
+                    skip_downloaded=skip_downloaded
+                )
+    # Indicate that no new values would be passed
+    out_queue.put('exit', increment=False)
+    # Do not exit till all tasks are complete
+    executor.wait_for_all()
     pbar.close()
-    return
 
 
 def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
@@ -105,9 +95,7 @@ def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
                 n_all_pans += len(panoids.difference(indexed_panoids_set))
                 n_filtered_pans += len(filtered_panoids.difference(indexed_panoids_set))
                 indexed_panoids_set.update(panoids)
-                if queue is not None:
-                    queue.put(pans)
-                    queue.total_amount = n_filtered_pans
+                queue.put_iter(filtered_pans)
                 pbar.set_postfix(
                     all_pans=n_all_pans,
                     filtered_pans=n_filtered_pans,
@@ -115,7 +103,8 @@ def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
             pbar.update(1)
     finally:
         pbar.close()
-        queue.put("exit")
+        # Indicate that no new values would be passed
+        queue.put('exit', increment=False)
     return indexed_panoids_set.difference(downloaded_panoids)
 
 
@@ -174,25 +163,41 @@ if __name__ == "__main__":
     pos_boxes = read_pos_boxes_file(args.pos_file, args.grid_radius)
     
     executor = PoolExecutor(max_workers=args.max_workers)
+    executor2 = PoolExecutor(max_workers=args.max_workers)
     m = mp.Manager()
-    panos_queue = m.Queue()
-    panos_queue.total_amount = 0
 
+    panos_queue = QueueIterator(m.Queue(), batch_size=args.max_workers)
     # Launch indexation
     get_panos_thread = Thread(
         target = get_panos,
+        daemon=True,
         args = (pos_boxes, executor, panos_queue, args)
     )
-    get_panos_thread.start()
 
-    panos_path_queue = m.Queue()
+    panos_path_queue = QueueIterator(m.Queue(), batch_size=args.max_workers)
     # Launch downloading
     download_and_save_thread = Thread(
         target = download_and_save_queue,
-        args = (executor, panos_queue,
+        daemon=True,
+        args = (executor2, panos_queue,
                 panos_path_queue, args)
     )
-    download_and_save_thread.start()
 
-    get_panos_thread.join()
-    download_and_save_thread.join()
+    threads = [
+        get_panos_thread,
+        download_and_save_thread,
+    ]
+    
+    # Start threads with small waiting between
+    for thread in threads:
+        thread.start()
+        time.sleep(3)
+
+    # Try to join threads
+    while any(thread.is_alive() for thread in threads):
+        try:
+            for thread in threads:
+                thread.join(timeout=1)
+        except KeyboardInterrupt:
+            exit(0)
+

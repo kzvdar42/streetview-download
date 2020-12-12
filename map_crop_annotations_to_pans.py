@@ -1,9 +1,6 @@
 import argparse
-import math
-import random
 import os
 import re
-import shutil
 
 import cv2
 import numpy as np
@@ -11,7 +8,7 @@ from tqdm import tqdm
 from pycocotools.coco import COCO
 
 from core.mapper import get_mapping, get_point_coords, get_bbox_coord
-from utils.writer import COCO_writer, get_coco_writer
+from utils.writer import get_coco_writer
 from utils.path import get_subfolders_with_files, is_image
 
 
@@ -57,8 +54,6 @@ if __name__ == '__main__':
             ann_ids = coco.getAnnIds(imgIds=img_id, iscrowd=None)
             im_anns = coco.loadAnns(ann_ids)
             if len(im_anns) == 0:
-                continue
-            if 'pan_crops' in img_info['file_name']:
                 continue
             im_name = os.path.splitext(os.path.split(img_info['file_name'])[1])[0]
             pan_name = '_'.join(im_name.split('_')[:-1])

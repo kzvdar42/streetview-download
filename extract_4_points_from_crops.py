@@ -16,8 +16,8 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('input_path', type=str, help='Input path')
     parser.add_argument('output_path', type=str, help='Output folder path')
-    parser.add_argument('--min_crop_size', type=int, default=15, help='Minimum size of crop to save')
-    parser.add_argument('--debug', action='store_true', help='Debug mode')
+    parser.add_argument('--min_crop_size', type=int, default=15, help='Minimum size of crop to save [Default 15]')
+    parser.add_argument('--debug', action='store_true', help='Debug mode [Default False]')
     return parser.parse_args()
 
 

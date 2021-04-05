@@ -6,11 +6,11 @@ import shutil
 
 import cv2
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from pycocotools.coco import COCO
 
 from core.mapper import get_mapping, get_point_coords, get_bbox_coord
-from utils.writer import COCO_writer, get_coco_writer
+from utils.writer import get_coco_writer
 from utils.path import get_subfolders_with_files, is_image
 
 
@@ -19,8 +19,8 @@ def get_args():
     parser.add_argument('input_path', type=str, help='Input path')
     parser.add_argument('output_path', type=str, help='Output folder path')
     parser.add_argument('--n_cuts_per_image', type=int, default=12, help='Number of random crops to do on image [default: 12]')
-    parser.add_argument('--resolution_x', type=int, default=1080, help='Resolution of the output image width [default: 256]')
-    parser.add_argument('--resolution_y', type=int, default=1920, help='Resolution of the output image height [default: 256]')
+    parser.add_argument('--res_x', type=int, default=1920, help='Resolution of the output image width [default: 256]')
+    parser.add_argument('--res_y', type=int, default=1080, help='Resolution of the output image height [default: 256]')
     parser.add_argument('--mean_fov', type=float, default=50.0, help='Mean Field of View for image height [default: 50.0]')
     parser.add_argument('--max_fov_offset', type=float, default=40.0, help='Max Field of View offset [default: 40.0]')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
@@ -95,9 +95,9 @@ if __name__ == '__main__':
                     phi += np.random.uniform(-max_phi_offset, max_phi_offset)
 
                     # Get mapping
-                    map_x, map_y = get_mapping(
-                        image, theta=theta, phi=phi, res_x=args.resolution_x,
-                        res_y=args.resolution_x, fov=fov,
+                    map_y, map_x = get_mapping(
+                        *image.shape[2], theta=theta, phi=phi,
+                        res_y=args.res_y,res_x=args.res_x, fov=fov,
                     )
                     coord_map = np.array([map_x.flatten(), map_y.flatten()]).T
 
@@ -128,9 +128,7 @@ if __name__ == '__main__':
                         continue
                     bbox = np.array(bbox, dtype=np.int32)
                     writer.add_annotation(
-                        image_id, bbox,
-                        track_id=-1,
-                        category_id=writer.get_cat_id('sign')
+                        image_id, bbox, category_id=writer.get_cat_id('sign')
                     )
                     if args.debug:
                         bbox[2] += bbox[0]

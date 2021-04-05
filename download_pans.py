@@ -1,6 +1,9 @@
+"""Script to index and download panoramas from input file."""
+
 import os
 import time
 import json
+from glob import glob
 import argparse
 from concurrent.futures import ThreadPoolExecutor as PoolExecutor
 from threading import Thread
@@ -8,10 +11,11 @@ import multiprocessing as mp
 
 import cv2
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
-from core.pans_download import get_panoids, download_panorama_v3
+from core.pans_download import get_panoids, get_grid_panoids, download_panorama_v3
 from utils.writer import get_coco_writer
+from utils.path import get_subfolders_with_files, is_image
 from utils.pool_helper import QueueIterator, PoolHelper, return_with_code
 
 
@@ -37,7 +41,7 @@ def download_and_save(panoid, save_path, zoom=5, min_zoom=3,
     if not (os.path.isfile(save_path) and skip_downloaded):
         # if returned empty image, try lowering the resolution
         for z in range(zoom, min_zoom-1, -1):
-            panorama = download_panorama_v3(panoid, zoom=z, disp=False)
+            panorama = download_panorama_v3(panoid, zoom=z)
             if np.sum(panorama) > 0:
                 break
         else:
@@ -54,38 +58,48 @@ def download_and_save(panoid, save_path, zoom=5, min_zoom=3,
 def download_and_save_queue(executor, in_queue, out_queue, args, skip_downloaded=True):
     pbar = tqdm(desc="Downloading panoramas", total=in_queue.total_amount)
     in_queue.pbar = pbar
+    n_skipped = 0
     executor = PoolHelper(pool=executor)
     for panos in in_queue:
         for pano in panos:
             year, month, panoid = pano['year'], pano['month'], pano['panoid']
             lat, lon = pano['lat'], pano['lon']
-            if int(year) >= args.min_year:
-                save_path = f'{args.output_path}/pans/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
-                executor.submit(
-                    return_with_code(download_and_save),
-                    f_done=lambda f: pbar.update(1),
-                    panoid=panoid, save_path=save_path, zoom=args.zoom,
-                    min_zoom=args.min_zoom, out_queue=out_queue,
-                    skip_downloaded=skip_downloaded
-                )
-    # Indicate that no new values would be passed
-    out_queue.put('exit', increment=False)
+            # If pan with this panoid, year, month and zoom exists, skip
+            same_files = glob(f'{args.output_path}/pans/*_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}')
+            if same_files:
+                n_skipped += 1
+                out_queue.put(os.path.split(same_files[0])[1])
+                pbar.update(1)
+                pbar.set_postfix(n_skipped=n_skipped)
+                continue
+            save_path = f'{args.output_path}/pans/{lat}_{lon}_{panoid}_{month}_{year}_{args.zoom}.{args.save_ext}'
+            executor.submit(
+                return_with_code(download_and_save),
+                f_done=lambda f: pbar.update(1),
+                panoid=panoid, save_path=save_path, zoom=args.zoom,
+                min_zoom=args.min_zoom, out_queue=out_queue,
+                skip_downloaded=skip_downloaded
+            )
     # Do not exit till all tasks are complete
     executor.wait_for_all()
+    # Indicate that no new values would be passed
+    out_queue.put('exit', increment=False)
     pbar.close()
 
 
-def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
+def get_panos(pos_boxes, executor, out_queue, args, downloaded_panoids=None):
     downloaded_panoids = downloaded_panoids or set()
     indexed_panoids_set = downloaded_panoids.copy()
     n_all_pans, n_filtered_pans = 0, 0
     kwargs = []
+    total = 0
     try:
         for pos_box in pos_boxes:
             grid = create_grid(*pos_box, step=args.step)
+            total += len(grid)
             kwargs.extend([dict(lat=lat, lon=lon, closest=args.closest) for lat, lon in grid])
 
-        pbar = tqdm(desc='Indexing panoids', total=len(kwargs))
+        pbar = tqdm(desc='Indexing panoids', total=total)
         for (lat, lon), pans in executor.map(lambda kwargs: get_panoids(**kwargs), kwargs):
             pans = [p for p in pans if p['panoid'] not in indexed_panoids_set]
             filtered_pans = [p for p in pans if p['year'] >= args.min_year]
@@ -95,7 +109,7 @@ def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
                 n_all_pans += len(panoids.difference(indexed_panoids_set))
                 n_filtered_pans += len(filtered_panoids.difference(indexed_panoids_set))
                 indexed_panoids_set.update(panoids)
-                queue.put_iter(filtered_pans)
+                out_queue.put_iter(filtered_pans)
                 pbar.set_postfix(
                     all_pans=n_all_pans,
                     filtered_pans=n_filtered_pans,
@@ -104,8 +118,17 @@ def get_panos(pos_boxes, executor, queue, args, downloaded_panoids=None):
     finally:
         pbar.close()
         # Indicate that no new values would be passed
-        queue.put('exit', increment=False)
+        out_queue.put('exit', increment=False)
     return indexed_panoids_set.difference(downloaded_panoids)
+
+
+def check_downloaded_panoids(panos_path):
+    downloaded_panoids = set()
+    for image_path in get_subfolders_with_files(panos_path, is_image, yield_by_one=True):
+        pano_name = os.path.split(image_path)[1]
+        panoid = '_'.join(pano_name.split('_')[2:-3])
+        downloaded_panoids.add(panoid)
+    return downloaded_panoids
 
 
 def read_pos_boxes_file(path, grid_radius):
@@ -159,6 +182,10 @@ if __name__ == "__main__":
 
     args = get_args()
     print(args)
+
+    # Check which pans are already downloaded
+    downloaded_panoids = check_downloaded_panoids(os.path.join(args.output_path, 'pans'))
+
     # Read position boxes
     pos_boxes = read_pos_boxes_file(args.pos_file, args.grid_radius)
     
@@ -171,7 +198,8 @@ if __name__ == "__main__":
     get_panos_thread = Thread(
         target = get_panos,
         daemon=True,
-        args = (pos_boxes, executor, panos_queue, args)
+        args = (pos_boxes, executor, panos_queue, args),
+        kwargs= dict(downloaded_panoids=downloaded_panoids),
     )
 
     panos_path_queue = QueueIterator(m.Queue(), batch_size=args.max_workers)

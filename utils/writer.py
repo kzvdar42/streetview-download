@@ -21,14 +21,25 @@ class CocoWriter:
         self.annotations = []
         self.images = []
         self.cat_to_id = dict()
+        self.id_to_cat = dict()
         self.max_im_id = 0
         for cat in self.categories:
             cat_id = cat['id']
-            self.cat_to_id[cat['name'].lower()] = cat_id
+            cat_name = cat['name'].lower()
+            self.cat_to_id[cat_name] = cat_id
+            self.id_to_cat[cat_id] = cat_name
             # Add synonyms
             if synonyms is not None:
                 for s in synonyms.get(cat['name'], []):
                     self.cat_to_id[s.lower()] = cat_id
+
+    def get_cat_name(self, cat_id):
+        cat_name = self.id_to_cat.get(cat_id, None)
+        if cat_name is None:
+            raise ValueError(f'Unknown category id ({cat_id})')
+        else:
+            return cat_name
+
 
     def get_cat_id(self, cat_name):
         cat_id = self.cat_to_id.get(cat_name.lower(), None)
@@ -75,7 +86,7 @@ class CocoWriter:
         })
         return image_id, filename
 
-    def add_annotation(self, image_id, bbox, track_id, category_id, segmentation=None):
+    def add_annotation(self, image_id, bbox, category_id, track_id=None, segmentation=None):
         assert image_id is not None
 
         area = int(bbox[2] * bbox[3])
@@ -86,6 +97,7 @@ class CocoWriter:
             'bbox': bbox,
             'attributes': {},
             'area': area,
+            'track_id': track_id,
             'is_occluded': False,
             'id': len(self.annotations) + 1,
             'category_id': category_id,
@@ -122,11 +134,15 @@ class CocoWriter:
         result['info'] = None
         return result
 
-    def write_result(self, save_path):
+    def write_result(self, save_path, verbose=False):
         if len(self.images) == 0 or len(self.annotations) == 0:
             print('Empty annotations, do not write to the file.')
             return
-        
+        if verbose:
+            print(
+                f'Saving coco annotation file to {save_path}' +
+                f'\n with {len(self.annotations)} annotations in {len(self.images)} images'
+            )
         result = self.get_json()
         os.makedirs(os.path.split(save_path)[0], exist_ok=True)
         with open(save_path, 'w') as out_file:
@@ -141,6 +157,10 @@ class CocoWriter:
 
 def get_coco_writer():
     return CocoWriter([
+        {
+            'id': 0,
+            'name': 'non-sign',
+        },
         {
             'id': 1,
             'name': 'sign',

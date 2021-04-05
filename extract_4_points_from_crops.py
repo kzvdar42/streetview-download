@@ -6,7 +6,7 @@ import shutil
 
 import cv2
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from pycocotools.coco import COCO
 
 from utils.path import get_subfolders_with_files, is_image
@@ -27,7 +27,8 @@ if __name__ == "__main__":
     img_num = 0
     os.makedirs(args.output_path, exist_ok=True)
     # Process annotations for each coco file in input path.
-    for coco_path in get_subfolders_with_files(args.input_path, lambda s: s.endswith('.json'), yield_by_one=True):
+    coco_paths = get_subfolders_with_files(args.input_path, lambda s: s.endswith('.json'), yield_by_one=True)
+    for coco_path in coco_paths:
         print('coco', coco_path)
         # If coco in annotations folder, data path is in the upper folder,
         # otherwise in the same folder

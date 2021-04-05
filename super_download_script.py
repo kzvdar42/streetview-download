@@ -8,7 +8,7 @@ import multiprocessing as mp
 
 import cv2
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from core.model import VinoModel, load_model_config
 from core.pans_download import get_panoids, download_panorama_v3
@@ -39,8 +39,8 @@ def get_args():
     # Horizontal crop args
     parser.add_argument('--n_cuts_per_image', type=int, default=5, help='Number of cuts [default: 5]')
     parser.add_argument('--phi', type=float, default=15, help='Phi angle (pitch) in range [-90, 90) degrees [default: 15]')
-    parser.add_argument('--res_x', type=int, default=1080, help='Resolution of the output image width [default: 256]')
-    parser.add_argument('--res_y', type=int, default=1920, help='Resolution of the output image height [default: 256]')
+    parser.add_argument('--res_x', type=int, default=1920, help='Resolution of the output image width [default: 256]')
+    parser.add_argument('--res_y', type=int, default=1080, help='Resolution of the output image height [default: 256]')
     parser.add_argument('--fov', type=float, default=60.0, help='Field of View for image height in range [0, 180] degrees [default: 60.0]')
     # Detector args
     parser.add_argument('detector_config', help='Path to the detector model config')
@@ -56,15 +56,15 @@ def get_args():
 if __name__ == "__main__":
 
     args = get_args()
-    print(args)
+    print('Args:', args, sep='\n')
     # Read position boxes
     pos_boxes = read_pos_boxes_file(args.pos_file, args.grid_radius)
     
     # Create executors
-    executor = PoolExecutor(max_workers=args.max_workers)
+    executor = PoolExecutor(max_workers=max(1, args.max_workers // 2))
     executor2 = PoolExecutor(max_workers=args.max_workers)
-    executor3 = PoolExecutor(max_workers=args.max_workers)
-    executor4 = PoolExecutor(max_workers=2)
+    executor3 = PoolExecutor(max_workers=3)
+    executor4 = PoolExecutor(max_workers=1)
     m = mp.Manager()
 
     # Launch indexation
@@ -115,7 +115,7 @@ if __name__ == "__main__":
         config=det_config,
         num_proc=args.detector_n_threads
     )
-    
+
     classifier = VinoModel(
         config=class_config,
         num_proc=args.detector_n_threads
@@ -132,6 +132,7 @@ if __name__ == "__main__":
             in_queue=hor_crops_path_queue,
             rel_path=f'{args.output_path}/hor_crops', 
             save_path=f'{args.output_path}/hor_crops_infer',
+            writer_save_path=f'{args.output_path}/hor_crops_annotations.json',
             out_queue=None, debug=False,
         )
     )
@@ -146,7 +147,7 @@ if __name__ == "__main__":
     # Start threads with small waiting between
     for thread in threads:
         thread.start()
-        time.sleep(3)
+        time.sleep(1)
 
     # Try to join threads
     while any(thread.is_alive() for thread in threads):

@@ -45,10 +45,10 @@ def get_crop(img, bbox, padding, min_padding=4):
     h_padding = max(min_padding, bbox[3] * padding)
 
     bbox = np.array([
-        max(0, bbox[0] - w_padding,
-        max(0, bbox[1] - h_padding,
+        max(0, bbox[0] - w_padding),
+        max(0, bbox[1] - h_padding),
         min(img_w, bbox[0] + bbox[2] + w_padding),
         min(img_h, bbox[1] + bbox[3] + h_padding),
     ], dtype=np.int32)
     
-    return image[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+    return img[bbox[1]:bbox[3], bbox[0]:bbox[2]]
